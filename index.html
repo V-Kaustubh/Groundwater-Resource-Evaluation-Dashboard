@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Groundwater Resource Evaluation Dashboard</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Leaflet.js for Interactive Map -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <!-- D3.js for Voronoi tesselation -->
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    
+    <style>
+        #map { height: calc(100vh - 210px); border-radius: 0.75rem; background-color: #1f2937; cursor: pointer; }
+        .info-panel-placeholder {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            text-align: center;
+            color: #6b7280; /* text-gray-500 */
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-200 font-sans">
+
+    <div class="container mx-auto p-4 md:p-6">
+        <!-- Header -->
+        <header class="text-center mb-6">
+            <h1 class="text-3xl md:text-5xl font-bold text-cyan-400">Groundwater Resource Evaluation Dashboard</h1>
+            <p class="text-gray-400 mt-2">Data-Grounded Policy & Planning Simulator for Hyderabad</p>
+        </header>
+
+        <!-- Main Content Grid -->
+        <main class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+            <!-- Left Column: Map and Legend -->
+            <div class="lg:col-span-2 bg-gray-800 p-4 rounded-xl shadow-lg">
+                <div class="flex justify-between items-center mb-4">
+                    <h3 class="text-xl font-semibold text-white">GHMC Ward Suitability Map</h3>
+                     <!-- Legend -->
+                    <div class="flex space-x-4 text-sm">
+                        <div class="flex items-center"><span class="w-4 h-4 rounded-full bg-green-500 mr-2 border border-green-300"></span> Low Risk</div>
+                        <div class="flex items-center"><span class="w-4 h-4 rounded-full bg-yellow-400 mr-2 border border-yellow-200"></span> Moderate Risk</div>
+                        <div class="flex items-center"><span class="w-4 h-4 rounded-full bg-red-600 mr-2 border border-red-400"></span> High Risk</div>
+                    </div>
+                </div>
+                <!-- Search Bar -->
+                <div class="relative mb-4">
+                    <input type="text" id="search-bar" placeholder="Search for a ward (e.g., Ward 75) and press Enter" class="w-full bg-gray-700 border border-gray-600 text-white rounded-lg p-3 pl-10 focus:ring-2 focus:ring-cyan-500 transition-all">
+                    <svg class="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                    </svg>
+                </div>
+                <div id="map"></div>
+            </div>
+            
+            <!-- Right Column: Analysis and Policy Panel -->
+            <div id="analysis-panel-container" class="lg:col-span-1 bg-gray-800 p-6 rounded-xl shadow-lg h-full">
+                 <div id="analysis-panel-placeholder" class="info-panel-placeholder">
+                    <div>
+                        <svg xmlns="http://www.w3.org/2000/svg" class="mx-auto h-12 w-12 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l5.447 2.724A1 1 0 0021 16.382V5.618a1 1 0 00-1.447-.894L15 7m-6 3v10m6-10v10" /></svg>
+                        <h3 class="mt-2 text-lg font-medium text-gray-400">Select a ward on the map</h3>
+                        <p class="mt-1 text-sm text-gray-500">Click anywhere on the map to reveal a ward and view its analysis.</p>
+                    </div>
+                 </div>
+                 <div id="analysis-panel-content" class="hidden h-full flex flex-col">
+                    <!-- Content will be populated by JS -->
+                 </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+    // --- APP STATE & CONFIG ---
+
+    let ghmcWardsGeoJSON = { "type": "FeatureCollection", "features": [] };
+    const weights = { waterLevel: 0.40, depletionRate: 0.30, rechargePotential: 0.20, projectedDemand: 0.10 };
+
+    const analysisPlaceholder = document.getElementById('analysis-panel-placeholder');
+    const analysisContent = document.getElementById('analysis-panel-content');
+
+    let map;
+    let geoJsonLayer;
+    let selectedZoneLayer = null;
+
+    // --- DATA SIMULATION (SELF-CONTAINED) ---
+    const dataAnchors = [
+        { name: "Gachibowli", lat: 17.44, lng: 78.34, data: { current_water_level_m: 21.5, alert_threshold_m: 25.0, depletion_rate_m_per_year: 2.1, recharge_potential: 2, projected_demand: 9 } },
+        { name: "Jubilee Hills", lat: 17.43, lng: 78.40, data: { current_water_level_m: 18.2, alert_threshold_m: 20.0, depletion_rate_m_per_year: 1.5, recharge_potential: 4, projected_demand: 8 } },
+        { name: "Charminar", lat: 17.36, lng: 78.47, data: { current_water_level_m: 11.8, alert_threshold_m: 15.0, depletion_rate_m_per_year: 0.8, recharge_potential: 3, projected_demand: 7 } },
+        { name: "Uppal", lat: 17.41, lng: 78.56, data: { current_water_level_m: 9.5, alert_threshold_m: 12.0, depletion_rate_m_per_year: 0.5, recharge_potential: 6, projected_demand: 5 } },
+        { name: "Kapra", lat: 17.49, lng: 78.57, data: { current_water_level_m: 8.5, alert_threshold_m: 10.0, depletion_rate_m_per_year: -0.2, recharge_potential: 7, projected_demand: 4 } },
+    ];
+
+    function generateDataGroundedSimulation() {
+        const bounds = [[78.25, 17.25], [78.65, 17.55]];
+        const numWards = 150;
+        const sites = Array.from({ length: numWards }, () => [
+            bounds[0][0] + Math.random() * (bounds[1][0] - bounds[0][0]),
+            bounds[0][1] + Math.random() * (bounds[1][1] - bounds[0][1])
+        ]);
+        const voronoi = d3.Delaunay.from(sites).voronoi(bounds.flat());
+
+        sites.forEach((site, i) => {
+            const polygon = voronoi.cellPolygon(i);
+            if (!polygon) return;
+            const wardNo = i + 1;
+            const feature = {
+                "type": "Feature",
+                "properties": { "ward_no": wardNo, "ward_name": `Ward ${wardNo}` },
+                "geometry": { "type": "Polygon", "coordinates": [polygon] }
+            };
+            const centerLng = site[0];
+            const centerLat = site[1];
+            let closestAnchor = null;
+            let minDistance = Infinity;
+            dataAnchors.forEach(anchor => {
+                const dist = Math.sqrt(Math.pow(centerLat - anchor.lat, 2) + Math.pow(centerLng - anchor.lng, 2));
+                if (dist < minDistance) {
+                    minDistance = dist;
+                    closestAnchor = anchor;
+                }
+            });
+            const variance = 0.2;
+            const base = closestAnchor.data;
+            feature.properties = { ...feature.properties, 
+                current_water_level_m: parseFloat((base.current_water_level_m * (1 + (Math.random() - 0.5) * variance)).toFixed(1)),
+                alert_threshold_m: parseFloat((base.alert_threshold_m * (1 + (Math.random() - 0.5) * variance)).toFixed(1)),
+                depletion_rate_m_per_year: parseFloat((base.depletion_rate_m_per_year + (Math.random() - 0.5) * 0.5).toFixed(1)),
+                recharge_potential: Math.max(1, Math.min(10, parseFloat((base.recharge_potential + (Math.random() - 0.5) * 2).toFixed(1)))),
+                projected_demand: Math.max(1, Math.min(10, parseFloat((base.projected_demand + (Math.random() - 0.5) * 2).toFixed(1))))
+             };
+            ghmcWardsGeoJSON.features.push(feature);
+        });
+    }
+
+    // --- CORE FUNCTIONS ---
+
+    function normalize(value, min, max, invert = false) {
+        const result = Math.max(0, Math.min(1, (value - min) / (max - min)));
+        return invert ? 1 - result : result;
+    }
+
+    function calculateSuitabilityIndex(data) {
+        if (!data || !data.current_water_level_m) return -1;
+        const waterLevelScore = normalize(data.current_water_level_m, data.alert_threshold_m - 5, data.alert_threshold_m + 5, true);
+        const depletionScore = normalize(data.depletion_rate_m_per_year, -1, 2.5, true);
+        const rechargeScore = normalize(data.recharge_potential, 1, 10, false);
+        const demandScore = normalize(data.projected_demand, 1, 10, true);
+        const finalScore = (waterLevelScore * weights.waterLevel + depletionScore * weights.depletionRate + rechargeScore * weights.rechargePotential + demandScore * weights.projectedDemand) * 100;
+        return Math.round(finalScore);
+    }
+    
+    function getPolicyRecommendation(score) {
+        if (score === -1) return { classification: "NO DATA", colorClass: "text-gray-400", recommendation: "No groundwater data available for this ward. Development should be preceded by a detailed hydrogeological survey." };
+        if (score > 70) return { classification: "LOW RISK", colorClass: "text-green-400", recommendation: "Area suitable for high-density residential and commercial development. Standard rainwater harvesting regulations apply." };
+        if (score >= 40) return { classification: "MODERATE RISK", colorClass: "text-yellow-400", recommendation: "Development permissible but restricted. Projects must incorporate mandatory high-efficiency water recycling systems (greywater reuse) and exceed standard rainwater harvesting quotas. Moratorium on new private borewells." };
+        return { classification: "HIGH RISK / PROTECTED", colorClass: "text-red-500", recommendation: "New construction and development projects are not advised. This land should be designated as a protected recharge zone. Ideal for green belts, urban forests, and mandatory construction of recharge pits." };
+    }
+
+    function processZoneData() {
+        ghmcWardsGeoJSON.features.forEach(feature => {
+            feature.properties.suitabilityScore = calculateSuitabilityIndex(feature.properties);
+        });
+    }
+    
+    function getZoneStyle(feature) {
+        const score = feature.properties.suitabilityScore;
+        return {
+            fillColor: getRiskColor(score),
+            weight: 0, 
+            opacity: 0,
+            fillOpacity: 0
+        };
+    }
+
+    function getRiskColor(score) {
+        if (score === -1) return '#4b5563';
+        return score > 70 ? '#22c55e' : score >= 40 ? '#facc15' : '#dc2626';
+    }
+    
+    function runSimulation(baseData, developmentType) {
+        const simulatedData = JSON.parse(JSON.stringify(baseData));
+        switch (developmentType) {
+            case 'residential':
+                simulatedData.projected_demand = Math.min(10, simulatedData.projected_demand + 2);
+                simulatedData.recharge_potential = Math.max(1, simulatedData.recharge_potential - 1);
+                break;
+            case 'it-park':
+                simulatedData.projected_demand = Math.min(10, simulatedData.projected_demand + 3);
+                simulatedData.recharge_potential = Math.max(1, simulatedData.recharge_potential - 2);
+                break;
+            case 'green-space':
+                simulatedData.projected_demand = Math.max(1, simulatedData.projected_demand - 1);
+                simulatedData.recharge_potential = Math.min(10, simulatedData.recharge_potential + 3);
+                break;
+        }
+        const newScore = calculateSuitabilityIndex(simulatedData);
+        const newPolicy = getPolicyRecommendation(newScore);
+        const resultsDiv = document.getElementById('simulation-results');
+        resultsDiv.innerHTML = `<p class="text-sm font-medium text-gray-400 mt-4">Projected Impact</p><p class="text-3xl font-bold ${newPolicy.colorClass}">${newScore} <span class="text-xl text-gray-300">/ 100</span></p><p class="text-lg font-semibold ${newPolicy.colorClass}">${newPolicy.classification}</p><div class="mt-2 bg-gray-900/50 p-3 rounded-md"><p class="text-sm text-gray-400">New Recommendation</p><p class="text-gray-300 text-sm">${newPolicy.recommendation}</p></div>`;
+        resultsDiv.classList.remove('hidden');
+    }
+    
+    function createMetricsHTML(data) {
+        if (data.suitabilityScore === -1) return `<div class="bg-gray-700/50 p-4 rounded-lg text-center text-gray-400">No detailed metrics available.</div>`;
+        const waterLevelStatus = data.current_water_level_m > data.alert_threshold_m ? 'green' : 'red';
+        const depletionStatus = data.depletion_rate_m_per_year < 0.5 ? 'green' : data.depletion_rate_m_per_year < 1.5 ? 'yellow' : 'red';
+        const rechargeStatus = data.recharge_potential > 7 ? 'green' : data.recharge_potential > 4 ? 'yellow' : 'red';
+        const demandStatus = data.projected_demand < 4 ? 'green' : data.projected_demand < 8 ? 'yellow' : 'red';
+        const statusColors = { green: 'bg-green-500', yellow: 'bg-yellow-400', red: 'bg-red-500' };
+        return `
+            <div class="bg-gray-700/50 p-4 rounded-lg space-y-3 text-sm">
+                <h4 class="font-semibold text-base text-gray-300">Data Breakdown</h4>
+                <div class="flex justify-between items-center"><span class="text-gray-400">Groundwater Level</span><span class="flex items-center font-semibold"><span class="w-3 h-3 rounded-full ${statusColors[waterLevelStatus]} mr-2"></span>${data.current_water_level_m.toFixed(1)}m</span></div>
+                <div class="flex justify-between items-center"><span class="text-gray-400">Depletion Rate (yr)</span><span class="flex items-center font-semibold"><span class="w-3 h-3 rounded-full ${statusColors[depletionStatus]} mr-2"></span>${data.depletion_rate_m_per_year.toFixed(1)}m</span></div>
+                <div class="flex justify-between items-center"><span class="text-gray-400">Recharge Potential</span><span class="flex items-center font-semibold"><span class="w-3 h-3 rounded-full ${statusColors[rechargeStatus]} mr-2"></span>${data.recharge_potential.toFixed(1)}/10</span></div>
+                <div class="flex justify-between items-center"><span class="text-gray-400">Projected Demand</span><span class="flex items-center font-semibold"><span class="w-3 h-3 rounded-full ${statusColors[demandStatus]} mr-2"></span>${data.projected_demand.toFixed(1)}/10</span></div>
+            </div>`;
+    }
+
+    function updateAnalysisPanel(props) {
+        const policy = getPolicyRecommendation(props.suitabilityScore);
+        const metricsHTML = createMetricsHTML(props);
+        analysisContent.innerHTML = `
+            <div class="flex-grow overflow-y-auto pr-2">
+                <h2 class="text-2xl font-bold text-white border-b-2 border-cyan-500 pb-2">${props.ward_name} (Ward ${props.ward_no})</h2>
+                <div class="mt-4 space-y-4">
+                    <div><p class="text-sm font-medium text-gray-400">Current Land Suitability Score</p><p class="text-4xl font-bold ${policy.colorClass}">${props.suitabilityScore > -1 ? props.suitabilityScore : 'N/A'} <span class="text-2xl text-gray-300">/ 100</span></p><p class="text-xl font-semibold ${policy.colorClass}">${policy.classification}</p></div>
+                    ${metricsHTML}
+                    <div class="bg-gray-700/50 p-4 rounded-lg"><p class="text-sm font-medium text-gray-400">Automated Policy Recommendation</p><p class="mt-1 text-gray-300">${policy.recommendation}</p></div>
+                    <div class="bg-indigo-900/40 p-4 rounded-lg mt-6"><h3 class="text-lg font-semibold text-indigo-200 mb-3">Development Impact Simulator</h3><div class="space-y-3"><label for="development-type" class="text-sm font-medium text-gray-400">Select Proposed Development:</label><select id="development-type" class="w-full bg-gray-700 border border-gray-600 text-white rounded-lg p-2 focus:ring-2 focus:ring-cyan-500"><option value="residential">High-Density Residential</option><option value="it-park">IT Park / Commercial Hub</option><option value="green-space">Urban Park / Green Space</option></select><button id="simulate-btn" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-lg transition-colors">Simulate Impact</button></div><div id="simulation-results" class="mt-4 hidden"></div></div>
+                </div>
+            </div>
+            <div class="flex-shrink-0 pt-4"><button class="w-full bg-cyan-600 hover:bg-cyan-700 text-white font-bold py-3 px-4 rounded-lg transition-colors">Generate Land Use Report (PDF)</button></div>`;
+        
+        analysisPlaceholder.classList.add('hidden');
+        analysisContent.classList.remove('hidden');
+
+        document.getElementById('simulate-btn').addEventListener('click', () => {
+             const devType = document.getElementById('development-type').value;
+             runSimulation(props, devType); // FIX: Pass the entire props object, not props.baseData
+        });
+    }
+    
+    function isPointInPolygon(point, polygon) {
+        const x = point.lng, y = point.lat;
+        let inside = false;
+        for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+            const xi = polygon[i].lng, yi = polygon[i].lat;
+            const xj = polygon[j].lng, yj = polygon[j].lat;
+            const intersect = ((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+            if (intersect) inside = !inside;
+        }
+        return inside;
+    }
+
+    function handleSearch() {
+        const query = document.getElementById('search-bar').value.toLowerCase().trim();
+        if (!query) return;
+
+        let foundLayer = null;
+
+        geoJsonLayer.eachLayer(layer => {
+            const wardName = layer.feature.properties.ward_name.toLowerCase();
+            if (wardName.includes(query)) {
+                foundLayer = layer;
+            }
+        });
+
+        if (foundLayer) {
+            map.fitBounds(foundLayer.getBounds(), { maxZoom: 15 });
+            if (selectedZoneLayer) {
+                selectedZoneLayer.setStyle({ weight: 0, opacity: 0, fillOpacity: 0 });
+            }
+            selectedZoneLayer = foundLayer;
+            selectedZoneLayer.setStyle({ weight: 3, opacity: 1, color: '#06b6d4', fillOpacity: 0.6 });
+            selectedZoneLayer.bringToFront();
+            updateAnalysisPanel(selectedZoneLayer.feature.properties);
+            
+            const searchBar = document.getElementById('search-bar');
+            searchBar.value = '';
+            searchBar.blur();
+        } else {
+            const searchBar = document.getElementById('search-bar');
+            const originalPlaceholder = searchBar.placeholder;
+            searchBar.value = '';
+            searchBar.placeholder = "Ward not found. Try again.";
+            setTimeout(() => { searchBar.placeholder = originalPlaceholder; }, 3000);
+        }
+    }
+
+    function initMap() {
+        map = L.map('map').setView([17.43, 78.44], 11);
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+            attribution: '&copy; OpenStreetMap &copy; CARTO', maxZoom: 20
+        }).addTo(map);
+
+        geoJsonLayer = L.geoJson(ghmcWardsGeoJSON, {
+            style: getZoneStyle
+        }).addTo(map);
+
+        map.on('click', function(e) {
+            let clickedLayer = null;
+            geoJsonLayer.eachLayer(layer => {
+                if (layer.feature.geometry.type === 'Polygon') {
+                    const polygonLatLngs = layer.getLatLngs()[0];
+                    if (isPointInPolygon(e.latlng, polygonLatLngs)) {
+                        clickedLayer = layer;
+                    }
+                }
+            });
+
+            if (clickedLayer) {
+                if (selectedZoneLayer) {
+                    selectedZoneLayer.setStyle({ weight: 0, opacity: 0, fillOpacity: 0 });
+                }
+                selectedZoneLayer = clickedLayer;
+                selectedZoneLayer.setStyle({ weight: 3, opacity: 1, color: '#06b6d4', fillOpacity: 0.6 });
+                selectedZoneLayer.bringToFront();
+                updateAnalysisPanel(selectedZoneLayer.feature.properties);
+            } else {
+                if (selectedZoneLayer) {
+                    selectedZoneLayer.setStyle({ weight: 0, opacity: 0, fillOpacity: 0 });
+                    selectedZoneLayer = null;
+                }
+                analysisContent.classList.add('hidden');
+                analysisPlaceholder.classList.remove('hidden');
+            }
+        });
+
+        const searchBar = document.getElementById('search-bar');
+        searchBar.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                handleSearch();
+            }
+        });
+    }
+
+    // --- INITIALIZATION ---
+    window.onload = function() {
+        const placeholderText = document.querySelector('#analysis-panel-placeholder div');
+        placeholderText.innerHTML = `
+            <svg xmlns="http://www.w3.org/2000/svg" class="mx-auto h-12 w-12 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l5.447 2.724A1 1 0 0021 16.382V5.618a1 1 0 00-1.447-.894L15 7m-6 3v10m6-10v10" /></svg>
+            <h3 class="mt-2 text-lg font-medium text-gray-400">Select a ward on the map</h3>
+            <p class="mt-1 text-sm text-gray-500">Click anywhere on the map to reveal a ward and view its analysis.</p>`;
+        
+        generateDataGroundedSimulation();
+        processZoneData();
+        initMap();
+    };
+    </script>
+</body>
+</html>
+
